@@ -10,6 +10,18 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+func handlerLog() func(routing.GameLog) pubsub.AckType {
+	return func(gamelog routing.GameLog) pubsub.AckType {
+		defer fmt.Print("> ")
+		err := gamelogic.WriteLog(gamelog)
+		if err != nil {
+			fmt.Printf("error writing log: %v\n", err)
+			return pubsub.NackRequeue
+		}
+		return pubsub.Ack
+	}
+}
+
 func main() {
 	fmt.Println("Starting Peril server...")
 
@@ -27,18 +39,19 @@ func main() {
 	}
 	defer ch.Close()
 	fmt.Println("Successfully opened a channel!")
-	// --- NEW CODE: Declare and bind the game_logs queue ---
-	_, _, err = pubsub.DeclareAndBind(
+	// --- NEW CODE: Subscribe to the game_logs queue ---
+	err = pubsub.SubscribeGob(
 		conn,
 		routing.ExchangePerilTopic,    // exchange
 		routing.GameLogSlug,           // queueName (game_logs)
 		routing.GameLogSlug+".*",      // routing key (game_logs.*)
 		pubsub.SimpleQueueTypeDurable, // queueType (durable)
+		handlerLog(),
 	)
 	if err != nil {
-		log.Fatalf("Failed to bind game_logs queue: %v", err)
+		log.Fatalf("could not subscribe to game logs: %v", err)
 	}
-	fmt.Println("Game logs queue bound successfully!")
+	fmt.Println("Subscribed to game logs queue successfully!")
 	// 1. Print the help menu so the user knows what commands are available
 	gamelogic.PrintServerHelp()
 

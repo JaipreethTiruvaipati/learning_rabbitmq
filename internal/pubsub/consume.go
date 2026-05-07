@@ -1,22 +1,34 @@
 package pubsub
 
 import (
+	"bytes"
+	"encoding/gob"
 	"encoding/json"
+	"fmt"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// SubscribeJSON subscribes to a RabbitMQ queue and unmarshals the JSON body into type T.
-func SubscribeJSON[T any](
+// Create an "enum" for the acknowledgement type
+type AckType int
+
+const (
+	Ack AckType = iota
+	NackRequeue
+	NackDiscard
+)
+
+func subscribe[T any](
 	conn *amqp.Connection,
 	exchange,
 	queueName,
 	key string,
-	queueType SimpleQueueType, // an enum to represent "durable" or "transient"
-	handler func(T),
+	simpleQueueType SimpleQueueType,
+	handler func(T) AckType,
+	unmarshaller func([]byte) (T, error),
 ) error {
 	// 1. Call DeclareAndBind to make sure the queue exists and is bound
-	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
+	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, simpleQueueType)
 	if err != nil {
 		return err
 	}
@@ -38,23 +50,81 @@ func SubscribeJSON[T any](
 	// 3. Start a goroutine that ranges over the channel of deliveries
 	go func() {
 		for msg := range msgs {
-			var data T
-			
-			// 4. Unmarshal the body (raw bytes) of each message into the (generic) T type
-			err := json.Unmarshal(msg.Body, &data)
+			// 4. Unmarshal the body using the provided unmarshaller
+			data, err := unmarshaller(msg.Body)
 			if err != nil {
-				// If there's an error unmarshaling, ack the message anyway so it doesn't get stuck
-				msg.Ack(false)
+				fmt.Printf("could not unmarshal message: %v\n", err)
+				msg.Nack(false, false)
 				continue
 			}
 
-			// 5. Call the given handler function with the unmarshaled message
-			handler(data)
+			// Capture the ackType returned by the handler
+			ackType := handler(data)
 
-			// 6. Acknowledge the message with delivery.Ack(false) to remove it from the queue
-			msg.Ack(false)
+			// Switch on the ackType to determine how to acknowledge the message
+			switch ackType {
+			case Ack:
+				fmt.Println("Acking message")
+				msg.Ack(false)
+			case NackRequeue:
+				fmt.Println("Nacking and requeuing message")
+				msg.Nack(false, true)
+			case NackDiscard:
+				fmt.Println("Nacking and discarding message")
+				msg.Nack(false, false)
+			}
 		}
 	}()
 
 	return nil
+}
+
+// SubscribeJSON subscribes to a RabbitMQ queue and unmarshals the JSON body into type T.
+func SubscribeJSON[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType, // an enum to represent "durable" or "transient"
+	handler func(T) AckType,
+) error {
+	return subscribe(
+		conn,
+		exchange,
+		queueName,
+		key,
+		queueType,
+		handler,
+		func(data []byte) (T, error) {
+			var target T
+			err := json.Unmarshal(data, &target)
+			return target, err
+		},
+	)
+}
+
+// SubscribeGob subscribes to a RabbitMQ queue and unmarshals the GOB body into type T.
+func SubscribeGob[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	return subscribe(
+		conn,
+		exchange,
+		queueName,
+		key,
+		queueType,
+		handler,
+		func(data []byte) (T, error) {
+			var target T
+			buf := bytes.NewBuffer(data)
+			dec := gob.NewDecoder(buf)
+			err := dec.Decode(&target)
+			return target, err
+		},
+	)
 }

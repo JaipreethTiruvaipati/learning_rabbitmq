@@ -38,7 +38,9 @@ func DeclareAndBind(
 		autoDelete, // autoDelete
 		exclusive,  // exclusive
 		false,      // noWait
-		nil,        // args
+		amqp.Table{
+			"x-dead-letter-exchange": "peril_dlx",
+		}, // args
 	)
 	if err != nil {
 		return nil, amqp.Queue{}, err
