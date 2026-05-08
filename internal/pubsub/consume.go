@@ -33,6 +33,16 @@ func subscribe[T any](
 		return err
 	}
 
+	// Set Qos to limit prefetch count to 10
+	err = ch.Qos(
+		10,    // prefetch count
+		0,     // prefetch size
+		false, // global
+	)
+	if err != nil {
+		return err
+	}
+
 	// 2. Get a new chan of amqp.Delivery structs by using the channel.Consume method
 	msgs, err := ch.Consume(
 		queue.Name, // queue
